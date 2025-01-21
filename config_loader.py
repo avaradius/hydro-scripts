@@ -1,3 +1,4 @@
+from datetime import datetime
 import pandas as pd
 import numpy as np
 
@@ -20,46 +21,49 @@ class ConfigLoader:
             # Validar nulos, tipo de datos y tamaño de listas
             config = {}
             anomalies = {}  # Nuevo diccionario para almacenar las anomalías
-            for key in ["tipo_simulacion", "n_points", "n_series", "ar_params", "ma_params", "means", "stds", "corr_matrix"]:
+            for key in ["tipo_simulacion", "n_points", "n_series", "ar_params", "ma_params", "means", "stds", "corr_matrix", "start_date", "end_date"]:
                 if key not in df.index or pd.isna(df.loc[key].values[0]):
                     raise ValueError(f"Error: El parámetro '{key}' es obligatorio y no puede estar nulo o no definido.")
                 try:
-                    value = eval(df.loc[key].values[0])
-
-                    # Validar tipo de datos
-                    if key in ["n_points", "n_series"] and not isinstance(value, int):
-                        raise ValueError(f"Error: El parámetro '{key}' debe ser un entero, pero se encontró {type(value).__name__}.")
-                    if key in ["ar_params", "ma_params", "means", "stds"] and not isinstance(value, list):
-                        raise ValueError(f"Error: El parámetro '{key}' debe ser una lista, pero se encontró {type(value).__name__}.")
+                    if key not in ["start_date","end_date"]:
+                        value = eval(df.loc[key].values[0])
                         
-                    # Validar tamaño de listas
-                    if key in ["ar_params", "ma_params", "means", "stds"] and len(value) != n_series:
-                        raise ValueError(f"Error: El parámetro '{key}' debe tener {n_series} elementos, pero tiene {len(value)}.")
+                        # Validar tipo de datos
+                        if key in ["n_points", "n_series"] and not isinstance(value, int):
+                            raise ValueError(f"Error: El parámetro '{key}' debe ser un entero, pero se encontró {type(value).__name__}.")
+                        
+                        if key in ["ar_params", "ma_params", "means", "stds"] and not isinstance(value, list):
+                            raise ValueError(f"Error: El parámetro '{key}' debe ser una lista, pero se encontró {type(value).__name__}.")
+                            
+                        # Validar tamaño de listas
+                        if key in ["ar_params", "ma_params", "means", "stds"] and len(value) != n_series:
+                            raise ValueError(f"Error: El parámetro '{key}' debe tener {n_series} elementos, pero tiene {len(value)}.")
 
-                    if key == "corr_matrix":
-                        # Validar que la matriz sea cuadrada
-                        if not all(len(row) == n_series for row in value) or len(value) != n_series:
-                            raise ValueError(f"Error: El parámetro '{key}' debe ser una matriz cuadrada de tamaño {n_series}x{n_series}.")
+                        if key == "corr_matrix":
+                            # Validar que la matriz sea cuadrada
+                            if not all(len(row) == n_series for row in value) or len(value) != n_series:
+                                raise ValueError(f"Error: El parámetro '{key}' debe ser una matriz cuadrada de tamaño {n_series}x{n_series}.")
 
-                        # Validar criterios estadísticos de la matriz de correlación
-                        value_np = np.array(value)
+                            # Validar criterios estadísticos de la matriz de correlación
+                            value_np = np.array(value)
 
-                        # Validar simetría
-                        if not np.allclose(value_np, value_np.T):
-                            raise ValueError(f"Error: El parámetro '{key}' debe ser una matriz simétrica.")
+                            # Validar simetría
+                            if not np.allclose(value_np, value_np.T):
+                                raise ValueError(f"Error: El parámetro '{key}' debe ser una matriz simétrica.")
 
-                        # Validar diagonal principal
-                        if not np.allclose(np.diag(value_np), 1):
-                            raise ValueError(f"Error: El parámetro '{key}' debe tener valores de 1 en la diagonal principal.")
+                            # Validar diagonal principal
+                            if not np.allclose(np.diag(value_np), 1):
+                                raise ValueError(f"Error: El parámetro '{key}' debe tener valores de 1 en la diagonal principal.")
 
-                        # Validar rango de valores
-                        if not np.all((-1.0 <= value_np) & (value_np <= 1.0)):
-                            raise ValueError(f"Error: El parámetro '{key}' contiene valores fuera del rango [-1, 1].")
+                            # Validar rango de valores
+                            if not np.all((-1.0 <= value_np) & (value_np <= 1.0)):
+                                raise ValueError(f"Error: El parámetro '{key}' contiene valores fuera del rango [-1, 1].")
 
-                        # Validar definida positiva
-                        if not np.all(np.linalg.eigvals(value_np) > 0):
-                            raise ValueError(f"Error: El parámetro '{key}' debe ser una matriz definida positiva.")
-
+                            # Validar definida positiva
+                            if not np.all(np.linalg.eigvals(value_np) > 0):
+                                raise ValueError(f"Error: El parámetro '{key}' debe ser una matriz definida positiva.")
+                    if key in ["start_date","end_date"]:
+                        value = df.loc[key].values[0]
                     config[key] = value
                 except (SyntaxError, NameError) as e:
                     raise ValueError(f"Error: El parámetro '{key}' contiene un valor inválido: {df.loc[key].values[0]}. Detalles: {e}")
@@ -90,7 +94,6 @@ class ConfigLoader:
 
             # Agregar las anomalías al diccionario de configuración
             config["anomalies"] = anomalies
-
             return config
         except Exception as e:
             raise ValueError(f"Error al cargar la configuración desde CSV: {e}")
