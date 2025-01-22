@@ -57,8 +57,12 @@ def main():
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"timestamp de la ejecución: {timestamp}")
         config = ConfigLoader.load_config_from_csv(config_file)
+        
         start_date  = config['start_date']
-        end_date  = config['end_date']
+        end_date = str(config['end_date']) if 'end_date' in config and pd.notna(config['end_date']) else None
+        if end_date is None:
+            end_date = timestamp
+        
         tipo_simulacion = config.get("tipo_simulacion", None)
 
         simulator = ProcessSimulator()

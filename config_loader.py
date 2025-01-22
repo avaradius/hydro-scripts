@@ -22,7 +22,7 @@ class ConfigLoader:
             config = {}
             anomalies = {}  # Nuevo diccionario para almacenar las anomalías
             for key in ["tipo_simulacion", "n_points", "n_series", "ar_params", "ma_params", "means", "stds", "corr_matrix", "start_date", "end_date"]:
-                if key not in df.index or pd.isna(df.loc[key].values[0]):
+                if key not in df.index or pd.isna(df.loc[key].values[0]) and key not in ["end_date"]:
                     raise ValueError(f"Error: El parámetro '{key}' es obligatorio y no puede estar nulo o no definido.")
                 try:
                     if key not in ["start_date","end_date"]:
