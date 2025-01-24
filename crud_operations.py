@@ -1,6 +1,7 @@
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.exc import SQLAlchemyError
 from models import Historicos, Simulacion, PLC
+import time
 
 class DatabaseOperations:
     def __init__(self, session):
@@ -75,6 +76,38 @@ class DatabaseOperations:
         except Exception as e:
             session.rollback()
             print(f"Error al insertar registros: {e}")
+
+    def insert_historicos_from_dataframe_delay(self, session, timestamps, series_df, id_plc, id_simulacion):
+        n_minutes = len(timestamps)
+        if len(series_df) != n_minutes:
+            raise ValueError("El número de filas en el DataFrame no coincide con el número de timestamps.")
+
+        for i, timestamp in enumerate(timestamps):
+            try:
+                velocidad = series_df.loc[i, 'Serie_1']
+                temperatura = series_df.loc[i, 'Serie_2']
+                anomalia = bool(series_df.loc[i, 'Anomaly'])
+                
+                historico = Historicos(
+                    id_plc=id_plc,
+                    timestamp=timestamp,
+                    velocidad=velocidad,
+                    temperatura=temperatura,
+                    id_simulacion=id_simulacion,
+                    anomalia=anomalia
+                )
+                session.add(historico)
+                session.commit()
+                print(f"Registro {i + 1}/{len(timestamps)} insertado: {timestamp} para PLC {id_plc}")
+    
+                if i < len(timestamps) - 1:
+                    time.sleep(60)
+
+            except Exception as e:
+                session.rollback()
+                print(f"Error al insertar registro en la posición {i}: {e}")
+                raise
+
 
     def insert_simulacion(self, session, next_id_simulacion, ids_metadata, tipo_simulacion):
         try:
