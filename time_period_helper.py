@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
 class TimePeriodHelper:
     @staticmethod
@@ -54,3 +55,9 @@ class TimePeriodHelper:
             return f"{year}-{month}-{day}"
         except Exception:
             raise ValueError(f"Fecha '{date_str}' no tiene el formato esperado DD-MM-YYYY.")
+        
+    @staticmethod
+    def add_one_month(start_date: str) -> str:
+        date_obj = TimePeriodHelper.parse_date(start_date)
+        new_date = date_obj + relativedelta(months=1)
+        return new_date.strftime("%Y-%m-%d %H:%M:%S")
