@@ -101,6 +101,5 @@ class ProcessSimulator:
             anomalies_config = {}
 
         series = self.apply_anomalies(series, anomalies_config)
-
         return series
 
