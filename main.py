@@ -16,12 +16,15 @@ from sqlalchemy import func
 from threading import Thread
 from typing import List
 from sqlalchemy.exc import SQLAlchemyError
+from threading import Lock
 
 logging.basicConfig(
     filename="error_log.log",
     level=logging.ERROR,
     format="%(asctime)s - %(levelname)s - %(message)s"
 )
+
+simulacion_lock= Lock()
 
 def save_simulation_config(output_dir, config_file, timestamp, seed, mode_sim):
     df_config = pd.read_csv(config_file)
@@ -46,175 +49,343 @@ def save_simulation_config(output_dir, config_file, timestamp, seed, mode_sim):
     updated_data.to_csv(output_csv_path, index=False)
     print(f"Configuración guardada en: {output_csv_path}")
 
-def load_historico(db = DatabaseConnection, config_file = str, ids_plc: List[int] = None, flags: any = None, config_json: json = None) -> bool:
-    try: 
+def prepare_simulation_data(config_file, timestamp, months_to_add=None):
+    config = ConfigLoader.load_config_from_csv(config_file)
+
+    start_date = config.get("start_date", timestamp)
+
+    if months_to_add:
+        end_date = TimePeriodHelper.add_months(start_date, months_to_add)
+    else:
+        end_date = str(config['end_date']) if 'end_date' in config and pd.notna(config['end_date']) else timestamp
+
+    tipo_simulacion = config.get("tipo_simulacion", None)
+    total_minutes = TimePeriodHelper.calculate_minutes(start_date, end_date)
+    config['n_points'] = total_minutes
+    timestamps = TimePeriodHelper.generate_timestamps(start_date, end_date)
+
+    return config, timestamps, tipo_simulacion
+
+def process_simulation(simulator, mode_sim, config):
+    if mode_sim == "from_scratch":
+        return simulator.simulate(mode=mode_sim, config=config)
+
+    elif mode_sim == "analyze_and_simulate":
+        existing_series_file = "../Input/serie_existente.csv"
+        if not os.path.exists(existing_series_file):
+            raise FileNotFoundError(f"El archivo de series existentes no se encontró: {existing_series_file}")
+
+        existing_series = pd.read_csv(existing_series_file)
+        print("Series existentes cargadas correctamente.")
+        return simulator.simulate(mode=mode_sim, config=config, time_series=existing_series, period=12, steps=config.get("n_points"))
+
+def save_simulation_results(output_dir, config_file, timestamp, seed, mode_sim, series, id_plc):
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Guardar las series en CSV
+    filename = f"simulation_results_id_plc_{id_plc}.csv"
+    series_csv_path = os.path.join(output_dir, filename)
+    series.to_csv(series_csv_path, index=False)
+
+    # Guardar la configuración de la simulación
+    save_simulation_config(output_dir, config_file, timestamp, seed, mode_sim)
+
+
+def load_historico(db, config_file, ids_plc, flags, config_json):
+    try:
         session = db.Session()
         db_ops = DatabaseOperations(session)
         simulator = ProcessSimulator()
         ids_metadata = []
-        max_id_simulacion = session.query(func.max(Simulacion.id_simulacion)).scalar()
-        next_id_simulacion = 1 if max_id_simulacion is None else max_id_simulacion + 1
+        table_name = 'historicos'
+        next_id_simulacion = get_next_simulacion_id(session)
+
         for id_plc in ids_plc:
-            seed = int(time.time() * 1000) % 10000  # Últimos 4 dígitos del tiempo actual
+            seed = int(time.time() * 1000) % 10000
             print(f"Semilla generada: {seed}")
 
             np.random.seed(seed)
-            
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"timestamp de la ejecución: {timestamp}")
-            config = ConfigLoader.load_config_from_csv(config_file)
-            
-            start_date  = config['start_date']
-            end_date = str(config['end_date']) if 'end_date' in config and pd.notna(config['end_date']) else None
-            if end_date is None:
-                end_date = timestamp
-            
-            tipo_simulacion = config.get("tipo_simulacion", None)
 
-            total_minutes = TimePeriodHelper.calculate_minutes(start_date, end_date)
-            config['n_points']=total_minutes
-            timestamps = TimePeriodHelper.generate_timestamps(start_date, end_date)
+            config, timestamps, tipo_simulacion = prepare_simulation_data(config_file, timestamp)
 
-            if tipo_simulacion == 1:
-                mode_sim = "from_scratch"
-            elif tipo_simulacion == 0:
-                mode_sim = "analyze_and_simulate"
             if tipo_simulacion not in [0, 1]:
-                raise ValueError(f"Modo de simulación no válido en el archivo de configuración. Debe ser 1 ('from_scratch') o 0 ('analyze_and_simulate'). Valor encontrado: {tipo_simulacion}.")
-            
-            if mode_sim == "from_scratch":
-                # Simulación desde cero
-                series = simulator.simulate(mode=mode_sim, config=config)
-            elif mode_sim == "analyze_and_simulate":
-                # Cargar series de tiempo existentes
-                existing_series_file = "../Input/serie_existente.csv"  # Asegúrate de tener este archivo
-                if not os.path.exists(existing_series_file):
-                    raise FileNotFoundError(f"El archivo de series existentes no se encontró: {existing_series_file}")
-                
-                existing_series = pd.read_csv(existing_series_file)
-                print("Series existentes cargadas correctamente.")
-                series = simulator.simulate(
-                    mode=mode_sim,
-                    config=config,
-                    time_series=existing_series,
-                    period=12,
-                    steps=config.get("n_points")  # Usa `n_points` como número de pasos a simular
-                )
+                raise ValueError(f"Modo de simulación no válido: {tipo_simulacion}")
 
-            new_config = Config(
-            timestamp=timestamp,
-            tipo_simulacion=mode_sim,
-            seed=seed,
-            config=config_json
-            )
+            mode_sim = "from_scratch" if tipo_simulacion == 1 else "analyze_and_simulate"
+            series = process_simulation(simulator, mode_sim, config)
 
+            new_config = Config(timestamp=timestamp, tipo_simulacion=mode_sim, seed=seed, config=config_json)
             id_metadata = db_ops.insert(new_config)
             if id_metadata:
                 ids_metadata.append(id_metadata)
-            
-            db_ops.insert_historicos_from_dataframe(session, timestamps, series, id_plc, next_id_simulacion)
 
-            output_dir = os.path.join("../Output/")
-            os.makedirs(output_dir, exist_ok=True)
+            db_ops.insert_historicos_from_dataframe(session, timestamps, series, id_plc, next_id_simulacion, ids_metadata)
+            save_simulation_results("../Output/", config_file, timestamp, seed, mode_sim, series, id_plc)
 
-            # Guardar las series
-            filename = f"simulation_results_id_plc_{id_plc}.csv"
-            series_csv_path = os.path.join(output_dir, filename)
-            series.to_csv(series_csv_path, index=False)
+        db_ops.insert_simulacion(session, next_id_simulacion, ids_metadata, mode_sim, table_name)
+        db_ops.clean_temp_simulacion(session, next_id_simulacion)
 
-            # Guardar la configuración de la simulación
-            save_simulation_config(output_dir, config_file, timestamp, seed, mode_sim)
+        flags['load_historico'] = True
 
-            #SeriesVisualizer.plot_individual_series(series, base_title="Ejemplo: Serie")
-
-        db_ops.insert_simulacion(session, next_id_simulacion, ids_metadata, mode_sim)
-        flags['load_historico'] = True  # Marcar éxito
-    
     except Exception as e:
         flags['load_historico'] = False
         logging.error(f"Error en load_historico: {e}")
-        raise 
+        raise
 
-def add_periodic_record(db = DatabaseConnection, config_file = str, id_plc = int, flags: any = None, config_json: json = None):
+
+def add_historico_periodic_record(db, config_file, id_plc, flags, config_json):
     try:
-
         session = db.Session()
         db_ops = DatabaseOperations(session)
+        simulator = ProcessSimulator()
+        next_id_simulacion = get_next_simulacion_id(session)
+        table_name = 'historicos'
         print(f"start")
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"Iniciando carga periódica a partir de: {timestamp}")
-        simulator = ProcessSimulator()
-        config = ConfigLoader.load_config_from_csv(config_file)
-        max_id_simulacion = session.query(func.max(Simulacion.id_simulacion)).scalar()
-        next_id_simulacion = 1 if max_id_simulacion is None else max_id_simulacion + 1
-        
+
         while True:
-            seed = int(time.time() * 1000) % 10000  # Últimos 4 dígitos del tiempo actual
+            seed = int(time.time() * 1000) % 10000
             print(f"Semilla generada: {seed}")
 
             np.random.seed(seed)
-            
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             print(f"timestamp de la ejecución: {timestamp}")
-            config = ConfigLoader.load_config_from_csv(config_file)
-            
-            start_date  = timestamp
-            end_date = TimePeriodHelper.add_one_month(start_date)           
-            tipo_simulacion = config.get("tipo_simulacion", None)
 
-            total_minutes = TimePeriodHelper.calculate_minutes(start_date, end_date)
-            config['n_points']=total_minutes
-            timestamps = TimePeriodHelper.generate_timestamps(start_date, end_date)
+            config, timestamps, tipo_simulacion = prepare_simulation_data(config_file, timestamp, months_to_add=1)
 
-            if tipo_simulacion == 1:
-                mode_sim = "from_scratch"
-            elif tipo_simulacion == 0:
-                mode_sim = "analyze_and_simulate"
             if tipo_simulacion not in [0, 1]:
-                raise ValueError(f"Modo de simulación no válido en el archivo de configuración. Debe ser 1 ('from_scratch') o 0 ('analyze_and_simulate'). Valor encontrado: {tipo_simulacion}.")
-            
-            if mode_sim == "from_scratch":
-                # Simulación desde cero
-                series = simulator.simulate(mode=mode_sim, config=config)
-            elif mode_sim == "analyze_and_simulate":
-                # Cargar series de tiempo existentes
-                existing_series_file = "../Input/serie_existente.csv"  # Asegúrate de tener este archivo
-                if not os.path.exists(existing_series_file):
-                    raise FileNotFoundError(f"El archivo de series existentes no se encontró: {existing_series_file}")
-                
-                existing_series = pd.read_csv(existing_series_file)
-                print("Series existentes cargadas correctamente.")
-                series = simulator.simulate(
-                    mode=mode_sim,
-                    config=config,
-                    time_series=existing_series,
-                    period=12,
-                    steps=config.get("n_points")  # Usa `n_points` como número de pasos a simular
-                )
+                raise ValueError(f"Modo de simulación no válido: {tipo_simulacion}")
 
-            new_config = Config(
-            timestamp=timestamp,
-            tipo_simulacion=mode_sim,
-            seed=seed,
-            config=config_json
-            )
+            mode_sim = "from_scratch" if tipo_simulacion == 1 else "analyze_and_simulate"
+            series = process_simulation(simulator, mode_sim, config)
 
+            new_config = Config(timestamp=timestamp, tipo_simulacion=mode_sim, seed=seed, config=config_json)
             id_metadata = db_ops.insert(new_config)
-            db_ops.insert_simulacion(session, next_id_simulacion, [id_metadata], mode_sim)
+
+            db_ops.insert_simulacion(session, next_id_simulacion, [id_metadata], mode_sim, table_name)
+            db_ops.clean_temp_simulacion(session, next_id_simulacion)
+            save_simulation_results("../Output/", config_file, timestamp, seed, mode_sim, series, id_plc)
             db_ops.insert_historicos_from_dataframe_delay(session, timestamps, series, id_plc, next_id_simulacion)
 
-            output_dir = os.path.join("../Output/")
-            os.makedirs(output_dir, exist_ok=True)
-
-            # Guardar la configuración de la simulación
-            save_simulation_config(output_dir, config_file, timestamp, seed, mode_sim)
-            #SeriesVisualizer.plot_individual_series(series, base_title="Ejemplo: Serie")
             flags[f"add_periodic_records_plc_{id_plc}"] = True
 
     except Exception as e:
         flags[f"add_periodic_records_plc_{id_plc}"] = False
         logging.error(f"Error en el hilo de id_plc {id_plc}: {e}")
         raise
+
+
+def load_historico_testing(db, config_file, ids_plc, flags, config_json):
+    try:
+        session = db.Session()
+        db_ops = DatabaseOperations(session)
+        simulator = ProcessSimulator()
+        ids_metadata = []
+        table_name = 'historicos_testing'
+        next_id_simulacion = get_next_simulacion_id(session)
+
+        for id_plc in ids_plc:
+            seed = int(time.time() * 1000) % 10000
+            print(f"Semilla generada: {seed}")
+
+            np.random.seed(seed)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"timestamp de la ejecución: {timestamp}")
+
+            config, timestamps, tipo_simulacion = prepare_simulation_data(config_file, timestamp)
+
+            if tipo_simulacion not in [0, 1]:
+                raise ValueError(f"Modo de simulación no válido: {tipo_simulacion}")
+
+            mode_sim = "from_scratch" if tipo_simulacion == 1 else "analyze_and_simulate"
+            series = process_simulation(simulator, mode_sim, config)
+
+            new_config = Config(timestamp=timestamp, tipo_simulacion=mode_sim, seed=seed, config=config_json)
+            id_metadata = db_ops.insert(new_config)
+            if id_metadata:
+                ids_metadata.append(id_metadata)
+
+            db_ops.insert_historicos_testing_from_dataframe(session, timestamps, series, id_plc, next_id_simulacion, ids_metadata)
+            save_simulation_results("../Output/", config_file, timestamp, seed, mode_sim, series, id_plc)
+
+        db_ops.insert_simulacion(session, next_id_simulacion, ids_metadata, mode_sim, table_name)
+        db_ops.clean_temp_simulacion(session, next_id_simulacion)
+
+        flags['load_historico'] = True
+
+    except Exception as e:
+        flags['load_historico'] = False
+        logging.error(f"Error en load_historico: {e}")
+        raise
+
+
+def add_historico_testing_periodic_record(db, config_file, id_plc, flags, config_json):
+    try:
+        session = db.Session()
+        db_ops = DatabaseOperations(session)
+        simulator = ProcessSimulator()
+        next_id_simulacion = get_next_simulacion_id(session)
+        table_name = 'historicos_testing'
+        print(f"start")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Iniciando carga periódica a partir de: {timestamp}")
+
+        while True:
+            seed = int(time.time() * 1000) % 10000
+            print(f"Semilla generada: {seed}")
+
+            np.random.seed(seed)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"timestamp de la ejecución: {timestamp}")
+
+            config, timestamps, tipo_simulacion = prepare_simulation_data(config_file, timestamp, months_to_add=1)
+
+            if tipo_simulacion not in [0, 1]:
+                raise ValueError(f"Modo de simulación no válido: {tipo_simulacion}")
+
+            mode_sim = "from_scratch" if tipo_simulacion == 1 else "analyze_and_simulate"
+            series = process_simulation(simulator, mode_sim, config)
+
+            new_config = Config(timestamp=timestamp, tipo_simulacion=mode_sim, seed=seed, config=config_json)
+            id_metadata = db_ops.insert(new_config)
+
+            db_ops.insert_simulacion(session, next_id_simulacion, [id_metadata], mode_sim, table_name)
+            db_ops.clean_temp_simulacion(session, next_id_simulacion)
+            save_simulation_results("../Output/", config_file, timestamp, seed, mode_sim, series, id_plc)
+            db_ops.insert_historicos_testing_from_dataframe_delay(session, timestamps, series, id_plc, next_id_simulacion)
+
+            flags[f"add_periodic_records_plc_{id_plc}"] = True
+
+    except Exception as e:
+        flags[f"add_periodic_records_plc_{id_plc}"] = False
+        logging.error(f"Error en el hilo de id_plc {id_plc}: {e}")
+        raise
+
+def load_monitoreo_vw(db, config_file, ids_plc, flags, config_json):
+    try:
+        session = db.Session()
+        db_ops = DatabaseOperations(session)
+        simulator = ProcessSimulator()
+        ids_metadata = []
+        table_name = 'Monitoreo_vw'
+        next_id_simulacion = get_next_simulacion_id(session)
+
+        for id_plc in ids_plc:
+            seed = int(time.time() * 1000) % 10000
+            print(f"Semilla generada: {seed}")
+
+            np.random.seed(seed)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"timestamp de la ejecución: {timestamp}")
+
+            config, timestamps, tipo_simulacion = prepare_simulation_data(config_file, timestamp)
+
+            if tipo_simulacion not in [0, 1]:
+                raise ValueError(f"Modo de simulación no válido: {tipo_simulacion}")
+
+            mode_sim = "from_scratch" if tipo_simulacion == 1 else "analyze_and_simulate"
+            series = process_simulation(simulator, mode_sim, config)
+
+            new_config = Config(timestamp=timestamp, tipo_simulacion=mode_sim, seed=seed, config=config_json)
+            id_metadata = db_ops.insert(new_config)
+            if id_metadata:
+                ids_metadata.append(id_metadata)
+
+            db_ops.insert_monitoreo_vw_from_dataframe(session, timestamps, series, id_plc, next_id_simulacion, ids_metadata)
+            save_simulation_results("../Output/", config_file, timestamp, seed, mode_sim, series, id_plc)
+
+        db_ops.insert_simulacion(session, next_id_simulacion, ids_metadata, mode_sim, table_name)
+        db_ops.clean_temp_simulacion(session, next_id_simulacion)
+
+        flags['load_historico'] = True
+
+    except Exception as e:
+        flags['load_historico'] = False
+        logging.error(f"Error en load_historico: {e}")
+        raise
+
+
+def add_monitoreo_vw_periodic_record(db, config_file, id_plc, flags, config_json):
+    try:
+        session = db.Session()
+        db_ops = DatabaseOperations(session)
+        simulator = ProcessSimulator()
+        next_id_simulacion = get_next_simulacion_id(session)
+        table_name = 'Monitoreo_vw'
+        print(f"start")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"Iniciando carga periódica a partir de: {timestamp}")
+
+        while True:
+            seed = int(time.time() * 1000) % 10000
+            print(f"Semilla generada: {seed}")
+
+            np.random.seed(seed)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"timestamp de la ejecución: {timestamp}")
+
+            config, timestamps, tipo_simulacion = prepare_simulation_data(config_file, timestamp, months_to_add=1)
+
+            if tipo_simulacion not in [0, 1]:
+                raise ValueError(f"Modo de simulación no válido: {tipo_simulacion}")
+
+            mode_sim = "from_scratch" if tipo_simulacion == 1 else "analyze_and_simulate"
+            series = process_simulation(simulator, mode_sim, config)
+
+            new_config = Config(timestamp=timestamp, tipo_simulacion=mode_sim, seed=seed, config=config_json)
+            id_metadata = db_ops.insert(new_config)
+
+            db_ops.insert_simulacion(session, next_id_simulacion, [id_metadata], mode_sim, table_name)
+            db_ops.clean_temp_simulacion(session, next_id_simulacion)
+            save_simulation_results("../Output/", config_file, timestamp, seed, mode_sim, series, id_plc)
+            db_ops.insert_monitoreo_vw_from_dataframe_delay(session, timestamps, series, id_plc, next_id_simulacion)
+
+            flags[f"add_periodic_records_plc_{id_plc}"] = True
+
+    except Exception as e:
+        flags[f"add_periodic_records_plc_{id_plc}"] = False
+        logging.error(f"Error en el hilo de id_plc {id_plc}: {e}")
+        raise
+
+def get_next_simulacion_id(session):
+    with simulacion_lock:
+        try:
+            max_id_simulacion = session.query(func.max(Simulacion.id_simulacion)).scalar()
+            next_id_simulacion = 1 if max_id_simulacion is None else max_id_simulacion + 1
+
+            placeholder_id_metadata = session.query(Config.id_metadata).filter_by(tipo_simulacion="placeholder").scalar()
+
+            if placeholder_id_metadata is None:
+                new_config = Config(
+                    timestamp=datetime.now(),
+                    tipo_simulacion="placeholder",
+                    seed=0,
+                    config="{}"
+                )
+                session.add(new_config)
+                session.commit()
+                placeholder_id_metadata = new_config.id_metadata
+                print(f"Creado id_metadata temporal: {placeholder_id_metadata}")
+
+            new_simulacion = Simulacion(
+                id_simulacion=next_id_simulacion, 
+                tipo_simulacion=None, 
+                id_metadata=placeholder_id_metadata
+            )
+            session.add(new_simulacion)
+            session.commit()
+
+            print(f"Reservado id_simulacion: {next_id_simulacion} con id_metadata {placeholder_id_metadata}")
+
+            return next_id_simulacion
+
+        except SQLAlchemyError as e:
+            session.rollback()
+            print(f"Error al obtener next_id_simulacion: {e}")
+            return None
 
 def main():
 
@@ -235,9 +406,27 @@ def main():
     thread_historico = Thread(target=load_historico, args=(db, config_file, ids_plc, flags, config_json))
     thread_historico.start()
     threads.append(thread_historico)
+
+    thread_historico_testing = Thread(target=load_historico_testing, args=(db, config_file, ids_plc, flags, config_json))
+    thread_historico_testing.start()
+    threads.append(thread_historico_testing)
+
+    thread_monitoreo_vw = Thread(target=load_monitoreo_vw, args=(db, config_file, ids_plc, flags, config_json))
+    thread_monitoreo_vw.start()
+    threads.append(thread_monitoreo_vw)
  
     for id_plc in ids_plc:
-        thread = Thread(target=add_periodic_record, args=(db, config_file, id_plc, flags, config_json))
+        thread = Thread(target=add_historico_periodic_record, args=(db, config_file, id_plc, flags, config_json))
+        thread.start()
+        threads.append(thread)
+
+    for id_plc in ids_plc:
+        thread = Thread(target=add_historico_testing_periodic_record, args=(db, config_file, id_plc, flags, config_json))
+        thread.start()
+        threads.append(thread)
+    
+    for id_plc in ids_plc:
+        thread = Thread(target=add_monitoreo_vw_periodic_record, args=(db, config_file, id_plc, flags, config_json))
         thread.start()
         threads.append(thread)
 
