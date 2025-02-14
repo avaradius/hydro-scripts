@@ -79,6 +79,76 @@ class Historicos(Base):
             raise ValueError("El campo 'anomalia' debe ser un valor booleano.")
         return value
 
+# Modelo: Historicos_Testing
+class HistoricosTesting(Base):
+    __tablename__ = "historicos_testing"
+    id_historico = Column(Integer, primary_key=True)
+    id_plc = Column(Integer, ForeignKey("plc.id_plc"), nullable=True)
+    timestamp = Column(TIMESTAMP, nullable=False)
+    velocidad = Column(Float, nullable=False)
+    temperatura = Column(Float, nullable=False)
+    id_metadata = Column(String(20), nullable=True)
+    id_simulacion = Column(Integer, ForeignKey("simulacion.id_simulacion"), nullable=True)
+    anomalia = Column(Boolean, nullable=False, default=False)
+
+    plc = relationship("PLC")
+    simulacion = relationship("Simulacion")
+
+    @validates("timestamp")
+    def validate_timestamp(self, key, value):
+        if not value:
+            raise ValueError("El campo 'timestamp' no puede estar vacío.")
+        return value
+
+    @validates("velocidad")
+    def validate_velocidad(self, key, value):
+        if value is None or value < 0:
+            raise ValueError("El campo 'velocidad' debe ser un número positivo.")
+        return value
+
+    @validates("temperatura")
+    def validate_temperatura(self, key, value):
+        if value is None or value < 0:
+            raise ValueError("El campo 'temperatura' debe ser un número positivo.")
+        return value
+
+    @validates("anomalia")
+    def validate_anomalia(self, key, value):
+        if not isinstance(value, bool):
+            raise ValueError("El campo 'anomalia' debe ser un valor booleano.")
+        return value
+
+# Modelo: Monitoreo_VW
+class MonitoreoVW(Base):
+    __tablename__ = "monitoreo_vw"
+    id_monitoreo_vw = Column(Integer, primary_key=True)
+    id_plc = Column(Integer, ForeignKey("plc.id_plc"), nullable=True)
+    timestamp = Column(TIMESTAMP, nullable=False)
+    velocidad = Column(Float, nullable=False)
+    temperatura = Column(Float, nullable=False)
+    id_metadata = Column(String(20), nullable=True)
+    id_simulacion = Column(Integer, ForeignKey("simulacion.id_simulacion"), nullable=True)
+
+    plc = relationship("PLC")
+    simulacion = relationship("Simulacion")
+
+    @validates("timestamp")
+    def validate_timestamp(self, key, value):
+        if not value:
+            raise ValueError("El campo 'timestamp' no puede estar vacío.")
+        return value
+
+    @validates("velocidad")
+    def validate_velocidad(self, key, value):
+        if value is None or value < 0:
+            raise ValueError("El campo 'velocidad' debe ser un número positivo.")
+        return value
+
+    @validates("temperatura")
+    def validate_temperatura(self, key, value):
+        if value is None or value < 0:
+            raise ValueError("El campo 'temperatura' debe ser un número positivo.")
+        return value
 
 # Modelo: Simulacion
 class Simulacion(Base):
@@ -86,6 +156,7 @@ class Simulacion(Base):
     id_simulacion = Column(Integer, primary_key=True)
     tipo_simulacion = Column(String(255), nullable=True)
     id_metadata = Column(Integer, ForeignKey("config.id_metadata"), primary_key=True)
+    table_name = Column(String(50), nullable=True)
 
     config = relationship("Config")
 
