@@ -57,7 +57,7 @@ class TimePeriodHelper:
             raise ValueError(f"Fecha '{date_str}' no tiene el formato esperado DD-MM-YYYY.")
         
     @staticmethod
-    def add_one_month(start_date: str) -> str:
+    def add_months(start_date: str, months_to_add: int) -> str:
         date_obj = TimePeriodHelper.parse_date(start_date)
-        new_date = date_obj + relativedelta(months=1)
+        new_date = date_obj + relativedelta(months=months_to_add)
         return new_date.strftime("%Y-%m-%d %H:%M:%S")
