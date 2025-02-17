@@ -81,7 +81,7 @@ class Historicos(Base):
 
 # Modelo: Historicos_Testing
 class HistoricosTesting(Base):
-    __tablename__ = "historicos_testing"
+    __tablename__ = "historicos_test"
     id_historico = Column(Integer, primary_key=True)
     id_plc = Column(Integer, ForeignKey("plc.id_plc"), nullable=True)
     timestamp = Column(TIMESTAMP, nullable=False)
